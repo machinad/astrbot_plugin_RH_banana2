@@ -18,7 +18,8 @@ class RHBanana2Plugin(Star):
 
     # ============ 全局变量 - API 配置 ============
     API_BASE_URL: str = "https://www.runninghub.cn/openapi/v2"
-    api_key: str = ""
+    api_keys: list = []
+    current_key_index: int = 0
     resolution: str = "1k"
     aspect_ratio: str = "1:1"
 
@@ -29,10 +30,12 @@ class RHBanana2Plugin(Star):
 
     async def initialize(self):
         """插件初始化，从配置读取参数"""
-        self.api_key = self.config.get("api_key", "")
+        self.api_keys = self.config.get("api_key", [])
+        if isinstance(self.api_keys, str):
+            self.api_keys = [self.api_keys] if self.api_keys else []
         self.resolution = self.config.get("resolution", "1k")
         self.aspect_ratio = self.config.get("aspect_ratio", "1:1")
-        logger.info(f"RH Banana2 插件初始化完成，分辨率: {self.resolution}, 宽高比: {self.aspect_ratio}")
+        logger.info(f"RH Banana2 插件初始化完成，已加载 {len(self.api_keys)} 个 API Key，分辨率: {self.resolution}, 宽高比: {self.aspect_ratio}")
 
     # ============ 主指令处理器 ============
     @filter.command("rh")
@@ -44,7 +47,7 @@ class RHBanana2Plugin(Star):
         - 有图片时执行图生图
         """
         # 检查 API Key
-        if not self.api_key:
+        if not self.api_keys:
             yield event.plain_result("请先在插件配置中设置 API Key")
             return
 
@@ -55,20 +58,44 @@ class RHBanana2Plugin(Star):
         # 解析消息中的图片 URL
         image_urls = await self.parse_image_urls(event)
 
-        if image_urls:
-            # 有图片，执行图生图
-            logger.info(f"检测到 {len(image_urls)} 张图片，执行图生图，提示词: {prompt}")
-            result = await self.image_to_image(image_urls, prompt)
-        else:
-            # 无图片，执行文生图
-            logger.info(f"执行文生图，提示词: {prompt}")
-            result = await self.text_to_image(prompt)
+        # Key 轮询机制
+        errors = []
+        result = None
+
+        for i in range(len(self.api_keys)):
+            # 切换到当前索引的 Key
+            if i > 0:
+                self.next_key()
+            
+            logger.info(f"使用 API Key {i + 1}/{len(self.api_keys)}")
+
+            if image_urls:
+                # 有图片，执行图生图
+                logger.info(f"检测到 {len(image_urls)} 张图片，执行图生图，提示词: {prompt}")
+                result = await self.image_to_image(image_urls, prompt)
+            else:
+                # 无图片，执行文生图
+                logger.info(f"执行文生图，提示词: {prompt}")
+                result = await self.text_to_image(prompt)
+
+            # 检查结果
+            if result["success"]:
+                # 成功，跳出循环
+                break
+            else:
+                # 失败，记录错误，继续下一个 Key
+                errors.append(f"Key {i + 1}: {result.get('error', '未知错误')}")
+                logger.warning(f"API Key {i + 1} 失败: {result.get('error')}")
+
+        # 重置 Key 索引
+        self.reset_key_index()
 
         # 统一处理结果并发送消息
-        if result["success"] and result["type"] == "image":
+        if result and result["success"] and result["type"] == "image":
             yield event.image_result(result["data"])
         else:
-            yield event.plain_result(result.get("error", "未知错误"))
+            error_msg = "\n".join(errors) if errors else "未知错误"
+            yield event.plain_result(f"所有 API Key 均失败:\n{error_msg}")
 
     # ============ 文生图函数 ============
     async def text_to_image(self, prompt: str) -> dict:
@@ -171,7 +198,7 @@ class RHBanana2Plugin(Star):
         """
         upload_url = f"{self.API_BASE_URL}/media/upload/binary"
         headers = {
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.get_current_key()}"
         }
 
         try:
@@ -275,12 +302,28 @@ class RHBanana2Plugin(Star):
 
         return image_urls
 
+    # ============ Key 管理辅助方法 ============
+    def get_current_key(self) -> str:
+        """获取当前 API Key"""
+        if not self.api_keys:
+            return ""
+        return self.api_keys[self.current_key_index]
+
+    def next_key(self):
+        """切换到下一个 API Key"""
+        if len(self.api_keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+
+    def reset_key_index(self):
+        """重置 Key 索引到第一个"""
+        self.current_key_index = 0
+
     # ============ 辅助方法 ============
     def _get_headers(self) -> dict:
         """获取 API 请求头"""
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.get_current_key()}",
         }
 
     async def terminate(self):
