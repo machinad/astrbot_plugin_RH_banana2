@@ -18,7 +18,7 @@
 ## 使用说明
 
 ### 配置
-1. 在 ![RunningHub](https://www.runninghub.cn/) 官网注册账号并获取 API Key
+1. 在 [RunningHub](https://www.runninghub.cn/"runninghub官方网站") 官网注册账号并获取 API Key
 2. 在 AstrBot 插件配置中填入 API Key（支持多个 Key）
 3. 选择默认分辨率和宽高比
 
