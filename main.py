@@ -1,24 +1,285 @@
+"""
+RH Banana2 图像生成插件
+通过 RunningHub API 提供文生图、图生图功能
+"""
+
+import asyncio
+import json
+import aiohttp
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.api.message_components import Image
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
+
+@register("rh_banana2", "machinad", "RunningHub Banana2 文生图/图生图插件", "0.1.1")
+class RHBanana2Plugin(Star):
+    """RunningHub Banana2 图像生成插件主类"""
+
+    # ============ 全局变量 - API 配置 ============
+    API_BASE_URL: str = "https://www.runninghub.cn/openapi/v2"
+    api_key: str = ""
+    resolution: str = "1k"
+    aspect_ratio: str = "1:1"
+
+    # ============ 初始化方法 ============
+    def __init__(self, context: Context, config: dict):
         super().__init__(context)
+        self.config = config
 
     async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        """插件初始化，从配置读取参数"""
+        self.api_key = self.config.get("api_key", "")
+        self.resolution = self.config.get("resolution", "1k")
+        self.aspect_ratio = self.config.get("aspect_ratio", "1:1")
+        logger.info(f"RH Banana2 插件初始化完成，分辨率: {self.resolution}, 宽高比: {self.aspect_ratio}")
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+    # ============ 主指令处理器 ============
+    @filter.command("rh")
+    async def rh(self, event: AstrMessageEvent):
+        """
+        RH 图像生成指令
+        用法: /rh <提示词> [图片]
+        - 无图片时执行文生图
+        - 有图片时执行图生图
+        """
+        # 检查 API Key
+        if not self.api_key:
+            yield event.plain_result("请先在插件配置中设置 API Key")
+            return
+
+        # 获取用户消息
+        message_str = event.message_str.strip()
+        prompt = message_str
+
+        # 解析消息中的图片 URL
+        image_urls = await self.parse_image_urls(event)
+
+        if image_urls:
+            # 有图片，执行图生图
+            logger.info(f"检测到图片，执行图生图，提示词: {prompt}")
+            async for result in self.image_to_image(event, image_urls[0], prompt):
+                yield result
+        else:
+            # 无图片，执行文生图
+            logger.info(f"执行文生图，提示词: {prompt}")
+            async for result in self.text_to_image(event, prompt):
+                yield result
+
+    # ============ 文生图函数 ============
+    async def text_to_image(self, event: AstrMessageEvent, prompt: str):
+        """
+        文生图函数
+        :param event: 消息事件
+        :param prompt: 文本提示词
+        """
+        url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/text-to-image"
+        headers = self._get_headers()
+        payload = {
+            "prompt": prompt,
+            "resolution": self.resolution,
+        }
+        if self.aspect_ratio:
+            payload["aspectRatio"] = self.aspect_ratio
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 提交任务
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        yield event.plain_result(f"提交任务失败: {error_text}")
+                        return
+                    result = await response.json()
+
+                task_id = result.get("taskId")
+                if not task_id:
+                    yield event.plain_result(f"获取任务ID失败: {result}")
+                    return
+
+                # 轮询查询结果
+                async for query_result in self.query_task(event, session, task_id):
+                    yield query_result
+
+        except Exception as e:
+            logger.error(f"文生图异常: {e}")
+            yield event.plain_result(f"发生错误: {str(e)}")
+
+    # ============ 图生图函数 ============
+    async def image_to_image(self, event: AstrMessageEvent, image_url: str, prompt: str):
+        """
+        图生图函数
+        :param event: 消息事件
+        :param image_url: 原始图片 URL
+        :param prompt: 文本提示词
+        """
+        try:
+            # 先上传图片到 RH
+            rh_image_url = await self.upload_image(image_url)
+            if not rh_image_url:
+                yield event.plain_result("图片上传失败")
+                return
+
+            logger.info(f"图片上传成功: {rh_image_url}")
+
+            url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/image-to-image"
+            headers = self._get_headers()
+            payload = {
+                "imageUrls": [rh_image_url],
+                "prompt": prompt,
+                "resolution": self.resolution,
+            }
+            if self.aspect_ratio:
+                payload["aspectRatio"] = self.aspect_ratio
+
+            async with aiohttp.ClientSession() as session:
+                # 提交任务
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        yield event.plain_result(f"提交任务失败: {error_text}")
+                        return
+                    result = await response.json()
+
+                task_id = result.get("taskId")
+                if not task_id:
+                    yield event.plain_result(f"获取任务ID失败: {result}")
+                    return
+
+                # 轮询查询结果
+                async for query_result in self.query_task(event, session, task_id):
+                    yield query_result
+
+        except Exception as e:
+            logger.error(f"图生图异常: {e}")
+            yield event.plain_result(f"发生错误: {str(e)}")
+
+    # ============ 上传图片函数 ============
+    async def upload_image(self, image_url: str) -> str:
+        """
+        上传图片到 RunningHub
+        :param image_url: 原始图片 URL
+        :return: RH 返回的新图片 URL，失败返回空字符串
+        """
+        upload_url = f"{self.API_BASE_URL}/media/upload/binary"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 下载原始图片
+                async with session.get(image_url) as download_response:
+                    if download_response.status != 200:
+                        logger.error(f"下载图片失败: {download_response.status}")
+                        return ""
+                    image_data = await download_response.read()
+
+                # 上传到 RH
+                form_data = aiohttp.FormData()
+                form_data.add_field('file', image_data, filename='image.png', content_type='image/png')
+
+                async with session.post(upload_url, headers=headers, data=form_data) as upload_response:
+                    if upload_response.status != 200:
+                        error_text = await upload_response.text()
+                        logger.error(f"上传图片失败: {error_text}")
+                        return ""
+                    result = await upload_response.json()
+
+                if result.get("code") == 0:
+                    return result.get("data", {}).get("download_url", "")
+                else:
+                    logger.error(f"上传失败: {result.get('message')}")
+                    return ""
+
+        except Exception as e:
+            logger.error(f"上传图片异常: {e}")
+            return ""
+
+    # ============ 查询任务函数 ============
+    async def query_task(self, event: AstrMessageEvent, session: aiohttp.ClientSession, task_id: str):
+        """
+        查询任务状态并返回结果
+        :param event: 消息事件
+        :param session: aiohttp 会话
+        :param task_id: 任务 ID
+        """
+        url = f"{self.API_BASE_URL}/query"
+        headers = self._get_headers()
+        payload = {"taskId": task_id}
+
+        max_retries = 60  # 最大轮询次数
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        yield event.plain_result(f"查询任务失败: {error_text}")
+                        return
+                    result = await response.json()
+
+                status = result.get("status", "")
+
+                if status == "SUCCESS":
+                    results = result.get("results", [])
+                    if results and len(results) > 0:
+                        output_url = results[0].get("url", "")
+                        if output_url:
+                            yield event.image_result(output_url)
+                        else:
+                            yield event.plain_result("生成成功但未获取到图片URL")
+                    else:
+                        yield event.plain_result("生成成功但结果为空")
+                    return
+
+                elif status == "FAILED":
+                    error_msg = result.get("errorMessage", "未知错误")
+                    yield event.plain_result(f"任务失败: {error_msg}")
+                    return
+
+                elif status in ["RUNNING", "QUEUED"]:
+                    await asyncio.sleep(3)
+                    retry_count += 1
+                else:
+                    yield event.plain_result(f"未知状态: {status}")
+                    return
+
+            except Exception as e:
+                logger.error(f"查询任务异常: {e}")
+                yield event.plain_result(f"查询异常: {str(e)}")
+                return
+
+        yield event.plain_result("任务超时，请稍后重试")
+
+    # ============ 解析图片 URL 函数 ============
+    async def parse_image_urls(self, event: AstrMessageEvent) -> list:
+        """
+        解析消息中的图片 URL
+        :param event: 消息事件
+        :return: 图片 URL 列表
+        """
+        image_urls = []
+        message_chain = event.get_messages()
+
+        for component in message_chain:
+            if isinstance(component, Image):
+                # 优先使用 URL，其次使用 file
+                url = component.url or component.file
+                if url:
+                    image_urls.append(url)
+
+        return image_urls
+
+    # ============ 辅助方法 ============
+    def _get_headers(self) -> dict:
+        """获取 API 请求头"""
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
 
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        """插件销毁方法"""
+        logger.info("RH Banana2 插件已卸载")

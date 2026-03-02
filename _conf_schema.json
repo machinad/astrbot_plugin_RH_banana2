@@ -1,0 +1,20 @@
+{
+  "api_key": {
+    "description": "RunningHub API Key",
+    "type": "string",
+    "hint": "请输入您的 RunningHub API Key（在 runninghub.cn 获取）",
+    "obvious_hint": true
+  },
+  "resolution": {
+    "description": "默认分辨率",
+    "type": "string",
+    "default": "1k",
+    "hint": "可选值: 1k, 2k, 4k"
+  },
+  "aspect_ratio": {
+    "description": "默认宽高比",
+    "type": "string",
+    "default": "1:1",
+    "hint": "可选值: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9"
+  }
+}
