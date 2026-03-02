@@ -4,9 +4,8 @@ RH Banana2 图像生成插件
 """
 
 import asyncio
-import json
 import aiohttp
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import Image
@@ -16,17 +15,17 @@ from astrbot.api.message_components import Image
 class RHBanana2Plugin(Star):
     """RunningHub Banana2 图像生成插件主类"""
 
-    # ============ 全局变量 - API 配置 ============
+    # ============ 类常量 ============
     API_BASE_URL: str = "https://www.runninghub.cn/openapi/v2"
-    api_keys: list = []
-    current_key_index: int = 0
-    resolution: str = "1k"
-    aspect_ratio: str = "1:1"
 
     # ============ 初始化方法 ============
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
+        # 实例属性初始化
+        self.api_keys: list = []
+        self.resolution: str = "1k"
+        self.aspect_ratio: str = "1:1"
 
     async def initialize(self):
         """插件初始化，从配置读取参数"""
@@ -58,25 +57,22 @@ class RHBanana2Plugin(Star):
         # 解析消息中的图片 URL
         image_urls = await self.parse_image_urls(event)
 
-        # Key 轮询机制
+        # Key 轮询机制（使用局部变量，避免并发污染）
         errors = []
         result = None
 
-        for i in range(len(self.api_keys)):
-            # 切换到当前索引的 Key
-            if i > 0:
-                self.next_key()
-            
-            logger.info(f"使用 API Key {i + 1}/{len(self.api_keys)}")
+        for key_index in range(len(self.api_keys)):
+            current_key = self.api_keys[key_index]
+            logger.info(f"使用 API Key {key_index + 1}/{len(self.api_keys)}")
 
             if image_urls:
                 # 有图片，执行图生图
                 logger.info(f"检测到 {len(image_urls)} 张图片，执行图生图，提示词: {prompt}")
-                result = await self.image_to_image(image_urls, prompt)
+                result = await self.image_to_image(image_urls, prompt, current_key)
             else:
                 # 无图片，执行文生图
                 logger.info(f"执行文生图，提示词: {prompt}")
-                result = await self.text_to_image(prompt)
+                result = await self.text_to_image(prompt, current_key)
 
             # 检查结果
             if result["success"]:
@@ -84,11 +80,8 @@ class RHBanana2Plugin(Star):
                 break
             else:
                 # 失败，记录错误，继续下一个 Key
-                errors.append(f"Key {i + 1}: {result.get('error', '未知错误')}")
-                logger.warning(f"API Key {i + 1} 失败: {result.get('error')}")
-
-        # 重置 Key 索引
-        self.reset_key_index()
+                errors.append(f"Key {key_index + 1}: {result.get('error', '未知错误')}")
+                logger.warning(f"API Key {key_index + 1} 失败: {result.get('error')}")
 
         # 统一处理结果并发送消息
         if result and result["success"] and result["type"] == "image":
@@ -98,14 +91,15 @@ class RHBanana2Plugin(Star):
             yield event.plain_result(f"所有 API Key 均失败:\n{error_msg}")
 
     # ============ 文生图函数 ============
-    async def text_to_image(self, prompt: str) -> dict:
+    async def text_to_image(self, prompt: str, api_key: str) -> dict:
         """
         文生图函数
         :param prompt: 文本提示词
+        :param api_key: 当前使用的 API Key
         :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/text-to-image"
-        headers = self._get_headers()
+        headers = self._get_headers(api_key)
         payload = {
             "prompt": prompt,
             "resolution": self.resolution,
@@ -127,18 +121,19 @@ class RHBanana2Plugin(Star):
                     return {"success": False, "error": f"获取任务ID失败: {result}"}
 
                 # 轮询查询结果
-                return await self.query_task(session, task_id)
+                return await self.query_task(session, task_id, api_key)
 
         except Exception as e:
             logger.error(f"文生图异常: {e}")
             return {"success": False, "error": f"发生错误: {str(e)}"}
 
     # ============ 图生图函数 ============
-    async def image_to_image(self, image_urls: list, prompt: str) -> dict:
+    async def image_to_image(self, image_urls: list, prompt: str, api_key: str) -> dict:
         """
         图生图函数（支持多张参考图）
         :param image_urls: 原始图片 URL 列表（最多10张）
         :param prompt: 文本提示词
+        :param api_key: 当前使用的 API Key
         :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         try:
@@ -148,7 +143,7 @@ class RHBanana2Plugin(Star):
             # 上传所有图片到 RH
             rh_image_urls = []
             for i, image_url in enumerate(image_urls):
-                rh_url = await self.upload_image(image_url)
+                rh_url = await self.upload_image(image_url, api_key)
                 if rh_url:
                     rh_image_urls.append(rh_url)
                     logger.info(f"图片 {i+1}/{len(image_urls)} 上传成功")
@@ -161,7 +156,7 @@ class RHBanana2Plugin(Star):
             logger.info(f"成功上传 {len(rh_image_urls)} 张图片")
 
             url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/image-to-image"
-            headers = self._get_headers()
+            headers = self._get_headers(api_key)
             payload = {
                 "imageUrls": rh_image_urls,
                 "prompt": prompt,
@@ -183,22 +178,23 @@ class RHBanana2Plugin(Star):
                     return {"success": False, "error": f"获取任务ID失败: {result}"}
 
                 # 轮询查询结果
-                return await self.query_task(session, task_id)
+                return await self.query_task(session, task_id, api_key)
 
         except Exception as e:
             logger.error(f"图生图异常: {e}")
             return {"success": False, "error": f"发生错误: {str(e)}"}
 
     # ============ 上传图片函数 ============
-    async def upload_image(self, image_url: str) -> str:
+    async def upload_image(self, image_url: str, api_key: str) -> str:
         """
         上传图片到 RunningHub
         :param image_url: 原始图片 URL
+        :param api_key: 当前使用的 API Key
         :return: RH 返回的新图片 URL，失败返回空字符串
         """
         upload_url = f"{self.API_BASE_URL}/media/upload/binary"
         headers = {
-            "Authorization": f"Bearer {self.get_current_key()}"
+            "Authorization": f"Bearer {api_key}"
         }
 
         try:
@@ -232,15 +228,16 @@ class RHBanana2Plugin(Star):
             return ""
 
     # ============ 查询任务函数 ============
-    async def query_task(self, session: aiohttp.ClientSession, task_id: str) -> dict:
+    async def query_task(self, session: aiohttp.ClientSession, task_id: str, api_key: str) -> dict:
         """
         查询任务状态并返回结果数据
         :param session: aiohttp 会话
         :param task_id: 任务 ID
+        :param api_key: 当前使用的 API Key
         :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         url = f"{self.API_BASE_URL}/query"
-        headers = self._get_headers()
+        headers = self._get_headers(api_key)
         payload = {"taskId": task_id}
 
         max_retries = 60
@@ -302,28 +299,12 @@ class RHBanana2Plugin(Star):
 
         return image_urls
 
-    # ============ Key 管理辅助方法 ============
-    def get_current_key(self) -> str:
-        """获取当前 API Key"""
-        if not self.api_keys:
-            return ""
-        return self.api_keys[self.current_key_index]
-
-    def next_key(self):
-        """切换到下一个 API Key"""
-        if len(self.api_keys) > 1:
-            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-
-    def reset_key_index(self):
-        """重置 Key 索引到第一个"""
-        self.current_key_index = 0
-
     # ============ 辅助方法 ============
-    def _get_headers(self) -> dict:
+    def _get_headers(self, api_key: str) -> dict:
         """获取 API 请求头"""
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.get_current_key()}",
+            "Authorization": f"Bearer {api_key}",
         }
 
     async def terminate(self):
