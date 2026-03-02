@@ -23,12 +23,16 @@ class RHBanana2Plugin(Star):
         super().__init__(context)
         self.config = config
         # 实例属性初始化
+        self.session: aiohttp.ClientSession = None
         self.api_keys: list = []
         self.resolution: str = "1k"
         self.aspect_ratio: str = "1:1"
 
     async def initialize(self):
         """插件初始化，从配置读取参数"""
+        # 创建持久化的 HTTP 会话
+        self.session = aiohttp.ClientSession()
+        
         self.api_keys = self.config.get("api_key", [])
         if isinstance(self.api_keys, str):
             self.api_keys = [self.api_keys] if self.api_keys else []
@@ -108,20 +112,19 @@ class RHBanana2Plugin(Star):
             payload["aspectRatio"] = self.aspect_ratio
 
         try:
-            async with aiohttp.ClientSession() as session:
-                # 提交任务
-                async with session.post(url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {"success": False, "error": f"提交任务失败: {error_text}"}
-                    result = await response.json()
+            # 提交任务
+            async with self.session.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return {"success": False, "error": f"提交任务失败: {error_text}"}
+                result = await response.json()
 
-                task_id = result.get("taskId")
-                if not task_id:
-                    return {"success": False, "error": f"获取任务ID失败: {result}"}
+            task_id = result.get("taskId")
+            if not task_id:
+                return {"success": False, "error": f"获取任务ID失败: {result}"}
 
-                # 轮询查询结果
-                return await self.query_task(session, task_id, api_key)
+            # 轮询查询结果
+            return await self.query_task(task_id, api_key)
 
         except Exception as e:
             logger.error(f"文生图异常: {e}")
@@ -165,20 +168,19 @@ class RHBanana2Plugin(Star):
             if self.aspect_ratio:
                 payload["aspectRatio"] = self.aspect_ratio
 
-            async with aiohttp.ClientSession() as session:
-                # 提交任务
-                async with session.post(url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {"success": False, "error": f"提交任务失败: {error_text}"}
-                    result = await response.json()
+            # 提交任务
+            async with self.session.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return {"success": False, "error": f"提交任务失败: {error_text}"}
+                result = await response.json()
 
-                task_id = result.get("taskId")
-                if not task_id:
-                    return {"success": False, "error": f"获取任务ID失败: {result}"}
+            task_id = result.get("taskId")
+            if not task_id:
+                return {"success": False, "error": f"获取任务ID失败: {result}"}
 
-                # 轮询查询结果
-                return await self.query_task(session, task_id, api_key)
+            # 轮询查询结果
+            return await self.query_task(task_id, api_key)
 
         except Exception as e:
             logger.error(f"图生图异常: {e}")
@@ -198,40 +200,38 @@ class RHBanana2Plugin(Star):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                # 下载原始图片
-                async with session.get(image_url) as download_response:
-                    if download_response.status != 200:
-                        logger.error(f"下载图片失败: {download_response.status}")
-                        return ""
-                    image_data = await download_response.read()
-
-                # 上传到 RH
-                form_data = aiohttp.FormData()
-                form_data.add_field('file', image_data, filename='image.png', content_type='image/png')
-
-                async with session.post(upload_url, headers=headers, data=form_data) as upload_response:
-                    if upload_response.status != 200:
-                        error_text = await upload_response.text()
-                        logger.error(f"上传图片失败: {error_text}")
-                        return ""
-                    result = await upload_response.json()
-
-                if result.get("code") == 0:
-                    return result.get("data", {}).get("download_url", "")
-                else:
-                    logger.error(f"上传失败: {result.get('message')}")
+            # 下载原始图片
+            async with self.session.get(image_url) as download_response:
+                if download_response.status != 200:
+                    logger.error(f"下载图片失败: {download_response.status}")
                     return ""
+                image_data = await download_response.read()
+
+            # 上传到 RH
+            form_data = aiohttp.FormData()
+            form_data.add_field('file', image_data, filename='image.png', content_type='image/png')
+
+            async with self.session.post(upload_url, headers=headers, data=form_data) as upload_response:
+                if upload_response.status != 200:
+                    error_text = await upload_response.text()
+                    logger.error(f"上传图片失败: {error_text}")
+                    return ""
+                result = await upload_response.json()
+
+            if result.get("code") == 0:
+                return result.get("data", {}).get("download_url", "")
+            else:
+                logger.error(f"上传失败: {result.get('message')}")
+                return ""
 
         except Exception as e:
             logger.error(f"上传图片异常: {e}")
             return ""
 
     # ============ 查询任务函数 ============
-    async def query_task(self, session: aiohttp.ClientSession, task_id: str, api_key: str) -> dict:
+    async def query_task(self, task_id: str, api_key: str) -> dict:
         """
         查询任务状态并返回结果数据
-        :param session: aiohttp 会话
         :param task_id: 任务 ID
         :param api_key: 当前使用的 API Key
         :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
@@ -245,7 +245,7 @@ class RHBanana2Plugin(Star):
 
         while retry_count < max_retries:
             try:
-                async with session.post(url, headers=headers, json=payload) as response:
+                async with self.session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
                         return {"success": False, "error": f"查询任务失败: {error_text}"}
@@ -309,4 +309,6 @@ class RHBanana2Plugin(Star):
 
     async def terminate(self):
         """插件销毁方法"""
+        if self.session and not self.session.closed:
+            await self.session.close()
         logger.info("RH Banana2 插件已卸载")
