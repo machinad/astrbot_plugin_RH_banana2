@@ -56,9 +56,9 @@ class RHBanana2Plugin(Star):
         image_urls = await self.parse_image_urls(event)
 
         if image_urls:
-            # 有图片，执行图生图
-            logger.info(f"检测到图片，执行图生图，提示词: {prompt}")
-            async for result in self.image_to_image(event, image_urls[0], prompt):
+            # 有图片，执行图生图（支持多张参考图）
+            logger.info(f"检测到 {len(image_urls)} 张图片，执行图生图，提示词: {prompt}")
+            async for result in self.image_to_image(event, image_urls, prompt):
                 yield result
         else:
             # 无图片，执行文生图
@@ -106,26 +106,37 @@ class RHBanana2Plugin(Star):
             yield event.plain_result(f"发生错误: {str(e)}")
 
     # ============ 图生图函数 ============
-    async def image_to_image(self, event: AstrMessageEvent, image_url: str, prompt: str):
+    async def image_to_image(self, event: AstrMessageEvent, image_urls: list, prompt: str):
         """
-        图生图函数
+        图生图函数（支持多张参考图）
         :param event: 消息事件
-        :param image_url: 原始图片 URL
+        :param image_urls: 原始图片 URL 列表（最多10张）
         :param prompt: 文本提示词
         """
         try:
-            # 先上传图片到 RH
-            rh_image_url = await self.upload_image(image_url)
-            if not rh_image_url:
-                yield event.plain_result("图片上传失败")
+            # 限制最多10张图片
+            image_urls = image_urls[:10]
+            
+            # 上传所有图片到 RH
+            rh_image_urls = []
+            for i, image_url in enumerate(image_urls):
+                rh_url = await self.upload_image(image_url)
+                if rh_url:
+                    rh_image_urls.append(rh_url)
+                    logger.info(f"图片 {i+1}/{len(image_urls)} 上传成功")
+                else:
+                    logger.warning(f"图片 {i+1}/{len(image_urls)} 上传失败，跳过")
+
+            if not rh_image_urls:
+                yield event.plain_result("所有图片上传失败")
                 return
 
-            logger.info(f"图片上传成功: {rh_image_url}")
+            logger.info(f"成功上传 {len(rh_image_urls)} 张图片")
 
             url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/image-to-image"
             headers = self._get_headers()
             payload = {
-                "imageUrls": [rh_image_url],
+                "imageUrls": rh_image_urls,
                 "prompt": prompt,
                 "resolution": self.resolution,
             }
