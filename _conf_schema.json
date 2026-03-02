@@ -1,8 +1,8 @@
 {
   "api_key": {
-    "description": "RunningHub API Key",
-    "type": "string",
-    "hint": "请输入您的 RunningHub API Key（在 runninghub.cn 获取）",
+    "description": "RunningHub API Key 列表",
+    "type": "list",
+    "hint": "支持多个 API Key，失败时自动切换（在 runninghub.cn 获取）",
     "obvious_hint": true
   },
   "resolution": {

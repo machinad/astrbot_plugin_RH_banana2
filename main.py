@@ -56,22 +56,26 @@ class RHBanana2Plugin(Star):
         image_urls = await self.parse_image_urls(event)
 
         if image_urls:
-            # 有图片，执行图生图（支持多张参考图）
+            # 有图片，执行图生图
             logger.info(f"检测到 {len(image_urls)} 张图片，执行图生图，提示词: {prompt}")
-            async for result in self.image_to_image(event, image_urls, prompt):
-                yield result
+            result = await self.image_to_image(image_urls, prompt)
         else:
             # 无图片，执行文生图
             logger.info(f"执行文生图，提示词: {prompt}")
-            async for result in self.text_to_image(event, prompt):
-                yield result
+            result = await self.text_to_image(prompt)
+
+        # 统一处理结果并发送消息
+        if result["success"] and result["type"] == "image":
+            yield event.image_result(result["data"])
+        else:
+            yield event.plain_result(result.get("error", "未知错误"))
 
     # ============ 文生图函数 ============
-    async def text_to_image(self, event: AstrMessageEvent, prompt: str):
+    async def text_to_image(self, prompt: str) -> dict:
         """
         文生图函数
-        :param event: 消息事件
         :param prompt: 文本提示词
+        :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         url = f"{self.API_BASE_URL}/rhart-image-n-g31-flash/text-to-image"
         headers = self._get_headers()
@@ -88,30 +92,27 @@ class RHBanana2Plugin(Star):
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        yield event.plain_result(f"提交任务失败: {error_text}")
-                        return
+                        return {"success": False, "error": f"提交任务失败: {error_text}"}
                     result = await response.json()
 
                 task_id = result.get("taskId")
                 if not task_id:
-                    yield event.plain_result(f"获取任务ID失败: {result}")
-                    return
+                    return {"success": False, "error": f"获取任务ID失败: {result}"}
 
                 # 轮询查询结果
-                async for query_result in self.query_task(event, session, task_id):
-                    yield query_result
+                return await self.query_task(session, task_id)
 
         except Exception as e:
             logger.error(f"文生图异常: {e}")
-            yield event.plain_result(f"发生错误: {str(e)}")
+            return {"success": False, "error": f"发生错误: {str(e)}"}
 
     # ============ 图生图函数 ============
-    async def image_to_image(self, event: AstrMessageEvent, image_urls: list, prompt: str):
+    async def image_to_image(self, image_urls: list, prompt: str) -> dict:
         """
         图生图函数（支持多张参考图）
-        :param event: 消息事件
         :param image_urls: 原始图片 URL 列表（最多10张）
         :param prompt: 文本提示词
+        :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         try:
             # 限制最多10张图片
@@ -128,8 +129,7 @@ class RHBanana2Plugin(Star):
                     logger.warning(f"图片 {i+1}/{len(image_urls)} 上传失败，跳过")
 
             if not rh_image_urls:
-                yield event.plain_result("所有图片上传失败")
-                return
+                return {"success": False, "error": "所有图片上传失败"}
 
             logger.info(f"成功上传 {len(rh_image_urls)} 张图片")
 
@@ -148,22 +148,19 @@ class RHBanana2Plugin(Star):
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        yield event.plain_result(f"提交任务失败: {error_text}")
-                        return
+                        return {"success": False, "error": f"提交任务失败: {error_text}"}
                     result = await response.json()
 
                 task_id = result.get("taskId")
                 if not task_id:
-                    yield event.plain_result(f"获取任务ID失败: {result}")
-                    return
+                    return {"success": False, "error": f"获取任务ID失败: {result}"}
 
                 # 轮询查询结果
-                async for query_result in self.query_task(event, session, task_id):
-                    yield query_result
+                return await self.query_task(session, task_id)
 
         except Exception as e:
             logger.error(f"图生图异常: {e}")
-            yield event.plain_result(f"发生错误: {str(e)}")
+            return {"success": False, "error": f"发生错误: {str(e)}"}
 
     # ============ 上传图片函数 ============
     async def upload_image(self, image_url: str) -> str:
@@ -208,18 +205,18 @@ class RHBanana2Plugin(Star):
             return ""
 
     # ============ 查询任务函数 ============
-    async def query_task(self, event: AstrMessageEvent, session: aiohttp.ClientSession, task_id: str):
+    async def query_task(self, session: aiohttp.ClientSession, task_id: str) -> dict:
         """
-        查询任务状态并返回结果
-        :param event: 消息事件
+        查询任务状态并返回结果数据
         :param session: aiohttp 会话
         :param task_id: 任务 ID
+        :return: {"success": bool, "type": "image"|"text", "data": str, "error": str}
         """
         url = f"{self.API_BASE_URL}/query"
         headers = self._get_headers()
         payload = {"taskId": task_id}
 
-        max_retries = 60  # 最大轮询次数
+        max_retries = 60
         retry_count = 0
 
         while retry_count < max_retries:
@@ -227,8 +224,7 @@ class RHBanana2Plugin(Star):
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        yield event.plain_result(f"查询任务失败: {error_text}")
-                        return
+                        return {"success": False, "error": f"查询任务失败: {error_text}"}
                     result = await response.json()
 
                 status = result.get("status", "")
@@ -238,31 +234,27 @@ class RHBanana2Plugin(Star):
                     if results and len(results) > 0:
                         output_url = results[0].get("url", "")
                         if output_url:
-                            yield event.image_result(output_url)
+                            return {"success": True, "type": "image", "data": output_url}
                         else:
-                            yield event.plain_result("生成成功但未获取到图片URL")
+                            return {"success": False, "error": "生成成功但未获取到图片URL"}
                     else:
-                        yield event.plain_result("生成成功但结果为空")
-                    return
+                        return {"success": False, "error": "生成成功但结果为空"}
 
                 elif status == "FAILED":
                     error_msg = result.get("errorMessage", "未知错误")
-                    yield event.plain_result(f"任务失败: {error_msg}")
-                    return
+                    return {"success": False, "error": f"任务失败: {error_msg}"}
 
                 elif status in ["RUNNING", "QUEUED"]:
                     await asyncio.sleep(3)
                     retry_count += 1
                 else:
-                    yield event.plain_result(f"未知状态: {status}")
-                    return
+                    return {"success": False, "error": f"未知状态: {status}"}
 
             except Exception as e:
                 logger.error(f"查询任务异常: {e}")
-                yield event.plain_result(f"查询异常: {str(e)}")
-                return
+                return {"success": False, "error": f"查询异常: {str(e)}"}
 
-        yield event.plain_result("任务超时，请稍后重试")
+        return {"success": False, "error": "任务超时，请稍后重试"}
 
     # ============ 解析图片 URL 函数 ============
     async def parse_image_urls(self, event: AstrMessageEvent) -> list:
