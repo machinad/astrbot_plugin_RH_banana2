@@ -13,12 +13,12 @@
 
 | 文生图 | 图生图 | 多图融合 |
 |:---:|:---:|:---:|
-| ![文生图效果](https://example.com/text-to-image.png) | ![图生图效果](https://example.com/image-to-image.png) | ![多图融合效果](https://example.com/multi-image.png) |
+| ![文生图效果](https://github.com/machinad/images_url/blob/main/astr_plugin_RH_banana/text_to_image_01.png) | ![图生图效果](https://github.com/machinad/images_url/blob/main/astr_plugin_RH_banana/image_to_image_01.png) | ![多图融合效果](https://github.com/machinad/images_url/blob/main/astr_plugin_RH_banana/image_to_image_02.png) |
 
 ## 使用说明
 
 ### 配置
-1. 在 RunningHub 官网注册账号并获取 API Key
+1. 在 ![RunningHub](https://www.runninghub.cn/) 官网注册账号并获取 API Key
 2. 在 AstrBot 插件配置中填入 API Key（支持多个 Key）
 3. 选择默认分辨率和宽高比
 
