@@ -11,7 +11,6 @@ from astrbot.api import logger
 from astrbot.api.message_components import Image
 
 
-@register("rh_banana2", "machinad", "RunningHub Banana2 文生图/图生图插件", "0.1.1")
 class RHBanana2Plugin(Star):
     """RunningHub Banana2 图像生成插件主类"""
 
